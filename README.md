@@ -133,6 +133,7 @@ DB 파일은 프로젝트 루트에 `devices.db`로 생성됩니다.
   - `phone_number` (TEXT, nullable)
   - `assigned_period` (TEXT, nullable)
   - `parking_lot_name` (TEXT, nullable)
+  - `origin_id` (TEXT, nullable)
 - table: `user`
   - `num_id` (INTEGER, PK, autoincrement)
   - `parking_lot_name` (TEXT, not null)
@@ -241,6 +242,30 @@ Request:
 }
 ```
 
+### 3-1) 장치 주차장명 upsert (웹)
+
+`PUT /web/device-parking-lot-name`
+
+Request:
+```json
+{
+  "device_id": "device-001",
+  "parking_lot_name": "dae"
+}
+```
+
+### 3-2) 장치 origin_id upsert (웹)
+
+`PUT /web/device-origin-id`
+
+Request:
+```json
+{
+  "device_id": "device-001",
+  "origin_id": "20"
+}
+```
+
 ### 4) device_id 행 추가 API (웹)
 
 `POST /web/device`
@@ -258,6 +283,8 @@ Request:
 
 - 전화번호 삭제: `DELETE /web/device-phone/{device_id}`
 - 부여기간 삭제: `DELETE /web/device-period/{device_id}`
+- 주차장명 삭제: `DELETE /web/device-parking-lot-name/{device_id}`
+- origin_id 삭제: `DELETE /web/device-origin-id/{device_id}`
 
 삭제는 row 자체를 지우지 않고 해당 column 값을 `null`로 만듭니다.
 
@@ -269,32 +296,24 @@ Request:
 
 ### 7) 웹 테이블용 전체 조회 API
 
-`GET /web/devices`
+`GET /web/devices/{id}`
 
 Basic Auth(`id`/`pw`)가 필요합니다.
-- 로그인한 사용자의 `parking_lot_name`이 `all`이면 전체 row 반환
-- `all`이 아니면 `device.parking_lot_name == 사용자 parking_lot_name`인 row만 반환
-- 응답 필드는 `parking_lot_name`을 제외한 컬럼만 반환
+- 경로의 `{id}`와 인증된 계정 `id`가 다르면 `403`
+- `{id}`가 `master`면 `device` 테이블 전체 컬럼 반환
+  - `device_id`, `phone_number`, `assigned_period`, `parking_lot_name`, `origin_id`
+- `master`가 아니면, `user` 테이블의 해당 `id`의 `parking_lot_name`과
+  `device.parking_lot_name`이 같은 row만 반환
+- 일반 계정 응답 필드: `device_id`, `phone_number`, `assigned_period`
 
-예시:
+예시(master):
 ```bash
-curl -u master:'silla01177!' http://127.0.0.1:8000/web/devices
+curl -u master:'silla01177!' http://127.0.0.1:8000/web/devices/master
 ```
 
-Response:
-```json
-[
-  {
-    "device_id": "device-001",
-    "phone_number": "01012345678",
-    "assigned_period": "2026-02-01~2026-12-31"
-  },
-  {
-    "device_id": "device-002",
-    "phone_number": null,
-    "assigned_period": null
-  }
-]
+예시(일반 계정):
+```bash
+curl -u admin2:'admin2-password' http://127.0.0.1:8000/web/devices/admin2
 ```
 
 ### 8) 로그인 API

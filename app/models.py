@@ -7,6 +7,7 @@ class Device(Base):
     __tablename__ = "device"
 
     device_id = Column(String, primary_key=True, index=True)
+    origin_id = Column(String, nullable=True, index=True)
     phone_number = Column(String, nullable=True, index=True)
     assigned_period = Column(String, nullable=True)
     parking_lot_name = Column(String, nullable=True, index=True)

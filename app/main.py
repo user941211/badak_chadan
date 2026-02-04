@@ -16,6 +16,7 @@ from .security import hash_password, verify_password
 from .schemas import (
     CreateUserRequest,
     CreateDeviceRequest,
+    DeleteMasterResponse,
     DeleteResponse,
     DeviceResponse,
     LoginRequest,
@@ -23,9 +24,12 @@ from .schemas import (
     PhoneLookupDevice,
     PhoneLookupRequest,
     PhoneLookupResponse,
+    UpsertParkingLotNameRequest,
     UpsertPeriodRequest,
+    UpsertOriginIdRequest,
     UpsertPhoneRequest,
     UserResponse,
+    DeviceMasterResponse,
 )
 
 app = FastAPI(
@@ -126,6 +130,16 @@ def ensure_device_parking_lot_name_column() -> None:
             connection.execute(text("ALTER TABLE device ADD COLUMN parking_lot_name VARCHAR"))
 
 
+def ensure_device_origin_id_column() -> None:
+    with engine.begin() as connection:
+        columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(device)")).fetchall()
+        }
+        if columns and "origin_id" not in columns:
+            connection.execute(text("ALTER TABLE device ADD COLUMN origin_id VARCHAR"))
+
+
 def ensure_default_master_user() -> None:
     db = SessionLocal()
     try:
@@ -149,6 +163,7 @@ def ensure_default_master_user() -> None:
 def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
     ensure_device_parking_lot_name_column()
+    ensure_device_origin_id_column()
     ensure_default_master_user()
 
 
@@ -200,6 +215,7 @@ def get_device_by_phone(
             PhoneLookupDevice(
                 device_id=device.device_id,
                 assigned_period=device.assigned_period,
+                origin_id=device.origin_id,
                 is_started=is_started,
             )
         )
@@ -210,6 +226,7 @@ def get_device_by_phone(
     combined_assigned_period = ",".join(
         (device.assigned_period or "") for device in lookup_devices
     )
+    combined_origin_ids = ",".join((device.origin_id or "") for device in lookup_devices)
 
     if len(lookup_devices) == 1 and not any_started:
         first_start_date = parse_start_date(first_device.assigned_period)
@@ -220,6 +237,7 @@ def get_device_by_phone(
             is_started=any_started,
             device_id=combined_device_ids,
             assigned_period=combined_assigned_period,
+            origin_id=combined_origin_ids,
         )
 
     not_started_count = sum(1 for device in lookup_devices if not device.is_started)
@@ -240,6 +258,7 @@ def get_device_by_phone(
         is_started=any_started,
         device_id=combined_device_ids,
         assigned_period=combined_assigned_period,
+        origin_id=combined_origin_ids,
     )
 
 
@@ -286,18 +305,48 @@ def create_user(
     return user
 
 
-@app.get("/web/devices", response_model=list[DeviceResponse], tags=["web"])
+@app.get("/web/devices/{id}", tags=["web"])
 def get_all_devices(
+    id: str,
     credentials: HTTPBasicCredentials = Depends(security),
     db: Session = Depends(get_db),
-) -> list[DeviceResponse]:
+) -> list[dict[str, str | None]]:
     user = authenticate_user_or_401(
         credentials.username,
         credentials.password,
         db,
     )
 
-    query = (
+    if user.id != id:
+        raise HTTPException(status_code=403, detail="Requested id does not match authenticated user")
+
+    if id == "master":
+        devices = (
+            db.query(Device)
+            .options(
+                load_only(
+                    Device.device_id,
+                    Device.phone_number,
+                    Device.assigned_period,
+                    Device.parking_lot_name,
+                    Device.origin_id,
+                )
+            )
+            .order_by(Device.device_id.asc())
+            .all()
+        )
+        return [
+            {
+                "device_id": device.device_id,
+                "phone_number": device.phone_number,
+                "assigned_period": device.assigned_period,
+                "parking_lot_name": device.parking_lot_name,
+                "origin_id": device.origin_id,
+            }
+            for device in devices
+        ]
+
+    devices = (
         db.query(Device)
         .options(
             load_only(
@@ -306,13 +355,18 @@ def get_all_devices(
                 Device.assigned_period,
             )
         )
+        .filter(Device.parking_lot_name == user.parking_lot_name)
+        .order_by(Device.device_id.asc())
+        .all()
     )
-
-    if user.parking_lot_name.lower() != "all":
-        query = query.filter(Device.parking_lot_name == user.parking_lot_name)
-
-    devices = query.order_by(Device.device_id.asc()).all()
-    return devices
+    return [
+        {
+            "device_id": device.device_id,
+            "phone_number": device.phone_number,
+            "assigned_period": device.assigned_period,
+        }
+        for device in devices
+    ]
 
 
 @app.post("/web/device", response_model=DeviceResponse, status_code=201, tags=["web"])
@@ -375,6 +429,50 @@ def upsert_device_period(
     return device
 
 
+@app.put("/web/device-parking-lot-name", response_model=DeviceMasterResponse, tags=["web"])
+def upsert_device_parking_lot_name(
+    payload: UpsertParkingLotNameRequest,
+    db: Session = Depends(get_db),
+) -> DeviceMasterResponse:
+    stmt = insert(Device).values(
+        device_id=payload.device_id,
+        parking_lot_name=payload.parking_lot_name,
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[Device.device_id],
+        set_={"parking_lot_name": payload.parking_lot_name},
+    )
+    execute_with_retry(db, stmt)
+    commit_or_503(db)
+
+    device = db.get(Device, payload.device_id)
+    if device is None:
+        raise HTTPException(status_code=500, detail="Failed to upsert parking lot name")
+    return device
+
+
+@app.put("/web/device-origin-id", response_model=DeviceMasterResponse, tags=["web"])
+def upsert_device_origin_id(
+    payload: UpsertOriginIdRequest,
+    db: Session = Depends(get_db),
+) -> DeviceMasterResponse:
+    stmt = insert(Device).values(
+        device_id=payload.device_id,
+        origin_id=payload.origin_id,
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[Device.device_id],
+        set_={"origin_id": payload.origin_id},
+    )
+    execute_with_retry(db, stmt)
+    commit_or_503(db)
+
+    device = db.get(Device, payload.device_id)
+    if device is None:
+        raise HTTPException(status_code=500, detail="Failed to upsert origin id")
+    return device
+
+
 @app.delete("/web/device-phone/{device_id}", response_model=DeleteResponse, tags=["web"])
 def delete_device_phone(
     device_id: str,
@@ -409,6 +507,44 @@ def delete_device_period(
 
     return DeleteResponse(
         message="Assigned period deleted",
+        device=device,
+    )
+
+
+@app.delete("/web/device-parking-lot-name/{device_id}", response_model=DeleteMasterResponse, tags=["web"])
+def delete_device_parking_lot_name(
+    device_id: str,
+    db: Session = Depends(get_db),
+) -> DeleteMasterResponse:
+    device = db.get(Device, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    device.parking_lot_name = None
+    commit_or_503(db)
+    db.refresh(device)
+
+    return DeleteMasterResponse(
+        message="Parking lot name deleted",
+        device=device,
+    )
+
+
+@app.delete("/web/device-origin-id/{device_id}", response_model=DeleteMasterResponse, tags=["web"])
+def delete_device_origin_id(
+    device_id: str,
+    db: Session = Depends(get_db),
+) -> DeleteMasterResponse:
+    device = db.get(Device, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    device.origin_id = None
+    commit_or_503(db)
+    db.refresh(device)
+
+    return DeleteMasterResponse(
+        message="Origin id deleted",
         device=device,
     )
 
