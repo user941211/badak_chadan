@@ -225,6 +225,7 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
     final changed =
         previous == null ||
         previous.deviceId != next.deviceId ||
+        previous.originId != next.originId ||
         previous.assignedPeriod != next.assignedPeriod;
     if (!forceReconnect && !changed && _bleService.isConnected) {
       return;
@@ -290,6 +291,7 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
         nextSelected = active.indexWhere(
           (item) =>
               item.deviceId == current.deviceId &&
+              item.originId == current.originId &&
               item.assignedPeriod == current.assignedPeriod,
         );
         if (nextSelected < 0) {
@@ -384,7 +386,7 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
 
     try {
       await _bleService.connectAndLogin(
-        deviceId: valid.deviceId,
+        deviceId: valid.originId,
         password: '123456',
       );
       _reconnectTimer?.cancel();

@@ -1,11 +1,13 @@
 class DeviceAssignment {
   DeviceAssignment({
     required this.deviceId,
+    required this.originId,
     required this.startDate,
     required this.endDate,
   });
 
   final String deviceId;
+  final String originId;
   final DateTime startDate;
   final DateTime endDate;
 
@@ -18,20 +20,31 @@ class DeviceAssignment {
   }
 
   Map<String, dynamic> toJson() {
-    return {'device_id': deviceId, 'assigned_period': assignedPeriod};
+    return {
+      'device_id': deviceId,
+      'origin_id': originId,
+      'assigned_period': assignedPeriod,
+    };
   }
 
   static DeviceAssignment? fromJson(Map<String, dynamic> json) {
     final deviceId = (json['device_id'] as String?)?.trim();
+    final originId = (json['origin_id'] as String?)?.trim();
     final period = (json['assigned_period'] as String?)?.trim();
-    return fromApi(deviceId: deviceId, assignedPeriod: period);
+    return fromApi(
+      deviceId: deviceId,
+      originId: originId,
+      assignedPeriod: period,
+    );
   }
 
   static DeviceAssignment? fromApi({
     required String? deviceId,
+    String? originId,
     required String? assignedPeriod,
   }) {
     final normalizedDeviceId = deviceId?.trim();
+    final normalizedOriginId = originId?.trim();
     final normalizedPeriod = assignedPeriod?.trim();
 
     if (normalizedDeviceId == null || normalizedDeviceId.isEmpty) {
@@ -48,6 +61,9 @@ class DeviceAssignment {
 
     return DeviceAssignment(
       deviceId: normalizedDeviceId,
+      originId: (normalizedOriginId == null || normalizedOriginId.isEmpty)
+          ? normalizedDeviceId
+          : normalizedOriginId,
       startDate: parsed.start,
       endDate: parsed.end,
     );
