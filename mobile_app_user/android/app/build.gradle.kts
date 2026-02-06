@@ -9,12 +9,12 @@ plugins {
 }
 
 android {
-    namespace = "com.example.mobile_app"
+    namespace = "com.pakree.parking_lot"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
     defaultConfig {
-        applicationId = "com.example.mobile_app"
+        applicationId = "com.pakree.parking_lot"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
