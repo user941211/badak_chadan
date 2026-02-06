@@ -50,6 +50,10 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
   final MobileApiService _apiService = MobileApiService();
   final BleLockService _bleService = BleLockService();
 
+  static const int _demoTapThreshold = 10;
+  static const String _demoPassword = '123456789';
+  static const String _demoPhoneNumber = '01057213321';
+
   List<DeviceAssignment> _availableAssignments = <DeviceAssignment>[];
   int? _selectedAssignmentIndex;
 
@@ -57,6 +61,7 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
   bool _connecting = false;
   String _statusText = '미연결';
   _ActionType? _activeAction;
+  int _bluetoothTapCount = 0;
 
   Timer? _reconnectTimer;
   Timer? _expiryCheckTimer;
@@ -102,30 +107,7 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
 
     try {
       final phoneNumber = await _resolvePhoneNumberFromDevice();
-      final response = await _apiService.lookupByPhone(phoneNumber);
-      if (!response.exists) {
-        await _clearAssignmentsAndConnection('등록된 장치가 없습니다.');
-        return;
-      }
-
-      // Server's is_started filtering is already applied in parser.
-      // Avoid extra client-date filtering here to reduce device clock variance issues.
-      final candidates = response.assignments.toList();
-
-      if (candidates.isEmpty) {
-        await _clearAssignmentsAndConnection('유효한 장치 할당 정보가 없습니다.');
-        return;
-      }
-
-      setState(() {
-        _availableAssignments = candidates;
-        _selectedAssignmentIndex = candidates.length == 1 ? 0 : null;
-        _statusText = candidates.length == 1 ? '장치 1개 확인됨' : '장치 선택 필요';
-      });
-
-      if (candidates.length == 1) {
-        await _selectDeviceAndConnect(0, forceReconnect: true);
-      }
+      await _fetchAssignmentsForPhone(phoneNumber);
     } catch (error) {
       setState(() {
         _statusText = '인증 실패: $error';
@@ -136,6 +118,132 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
           _busy = false;
         });
       }
+    }
+  }
+
+  Future<void> _lookupAssignmentsWithPhone(String phoneNumber) async {
+    if (_busy) {
+      return;
+    }
+
+    setState(() {
+      _busy = true;
+      _statusText = '테스트 인증 중';
+    });
+
+    try {
+      await _fetchAssignmentsForPhone(phoneNumber);
+    } catch (error) {
+      setState(() {
+        _statusText = '인증 실패: $error';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _fetchAssignmentsForPhone(String phoneNumber) async {
+    final response = await _apiService.lookupByPhone(phoneNumber);
+    if (!response.exists) {
+      await _clearAssignmentsAndConnection('등록된 장치가 없습니다.');
+      return;
+    }
+
+    // Server's is_started filtering is already applied in parser.
+    // Avoid extra client-date filtering here to reduce device clock variance issues.
+    final candidates = response.assignments.toList();
+
+    if (candidates.isEmpty) {
+      await _clearAssignmentsAndConnection('유효한 장치 할당 정보가 없습니다.');
+      return;
+    }
+
+    setState(() {
+      _availableAssignments = candidates;
+      _selectedAssignmentIndex = candidates.length == 1 ? 0 : null;
+      _statusText = candidates.length == 1 ? '장치 1개 확인됨' : '장치 선택 필요';
+    });
+
+    if (candidates.length == 1) {
+      await _selectDeviceAndConnect(0, forceReconnect: true);
+    }
+  }
+
+  void _handleBluetoothDemoTap() {
+    if (_busy) {
+      return;
+    }
+
+    _bluetoothTapCount += 1;
+    if (_bluetoothTapCount < _demoTapThreshold) {
+      return;
+    }
+    _bluetoothTapCount = 0;
+    unawaited(_showDemoPasswordDialog());
+  }
+
+  Future<void> _showDemoPasswordDialog() async {
+    final controller = TextEditingController();
+    bool invalid = false;
+
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: const Text('테스트 인증'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: controller,
+                    keyboardType: TextInputType.number,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: '비밀번호',
+                    ),
+                  ),
+                  if (invalid)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 8),
+                      child: Text(
+                        '비밀번호가 올바르지 않습니다.',
+                        style: TextStyle(color: Colors.red),
+                      ),
+                    ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('취소'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    if (controller.text.trim() == _demoPassword) {
+                      Navigator.of(context).pop(true);
+                      return;
+                    }
+                    setState(() {
+                      invalid = true;
+                    });
+                  },
+                  child: const Text('확인'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (accepted == true) {
+      unawaited(_lookupAssignmentsWithPhone(_demoPhoneNumber));
     }
   }
 
@@ -456,23 +564,35 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
       top: false,
       child: Card(
         margin: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          child: Row(
-            children: [
-              Icon(
-                connected
-                    ? Icons.bluetooth_connected
-                    : Icons.bluetooth_disabled,
-                color: statusColor,
-              ),
-              const SizedBox(width: 8),
-              const Text('블루투스', style: TextStyle(fontWeight: FontWeight.w700)),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  _statusText,
-                  overflow: TextOverflow.ellipsis,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(
+              children: [
+                GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onTap: _handleBluetoothDemoTap,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        connected
+                            ? Icons.bluetooth_connected
+                            : Icons.bluetooth_disabled,
+                        color: statusColor,
+                      ),
+                      const SizedBox(width: 8),
+                      const Text(
+                        '블루투스',
+                        style: TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(width: 8),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: Text(
+                    _statusText,
+                    overflow: TextOverflow.ellipsis,
                   style: TextStyle(color: statusColor),
                 ),
               ),
