@@ -96,6 +96,15 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
       _selectedAssignmentIndex = 0;
     });
     _startReconnectLoop();
+    unawaited(_runStartupAutoRefreshOnce());
+  }
+
+  Future<void> _runStartupAutoRefreshOnce() async {
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    if (!mounted || _busy) {
+      return;
+    }
+    await _lookupAssignments();
   }
 
   Future<void> _lookupAssignments() async {
