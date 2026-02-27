@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io' show Platform;
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -62,6 +63,8 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
   String _statusText = '미연결';
   _ActionType? _activeAction;
   int _bluetoothTapCount = 0;
+  int _upSpinTrigger = 0;
+  int _downSpinTrigger = 0;
 
   Timer? _reconnectTimer;
   Timer? _expiryCheckTimer;
@@ -162,14 +165,41 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
       return;
     }
 
+    final saved = await _store.readValidAssignment();
+    int? restoredIndex;
+    if (saved != null) {
+      final idx = candidates.indexWhere(
+        (item) =>
+            item.deviceId == saved.deviceId &&
+            item.originId == saved.originId &&
+            item.assignedPeriod == saved.assignedPeriod,
+      );
+      if (idx >= 0) {
+        restoredIndex = idx;
+      }
+    }
+
+    final selectedIndex = candidates.length == 1 ? 0 : restoredIndex;
+
     setState(() {
       _availableAssignments = candidates;
-      _selectedAssignmentIndex = candidates.length == 1 ? 0 : null;
-      _statusText = candidates.length == 1 ? '장치 1개 확인됨' : '장치 선택 필요';
+      _selectedAssignmentIndex = selectedIndex;
+      _statusText = candidates.length == 1
+          ? '장치 1개 확인됨'
+          : (selectedIndex == null ? '장치 선택 필요' : '이전 선택 장치 복원됨');
     });
 
     if (candidates.length == 1) {
-      await _selectDeviceAndConnect(0, forceReconnect: true);
+      await _selectDeviceAndConnect(
+        0,
+        forceReconnect: true,
+        allowWhenBusy: true,
+      );
+      return;
+    }
+
+    if (selectedIndex != null) {
+      await _selectDeviceAndConnect(selectedIndex, allowWhenBusy: true);
     }
   }
 
@@ -204,9 +234,7 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
                     controller: controller,
                     keyboardType: TextInputType.number,
                     obscureText: true,
-                    decoration: const InputDecoration(
-                      labelText: '비밀번호',
-                    ),
+                    decoration: const InputDecoration(labelText: '비밀번호'),
                   ),
                   if (invalid)
                     const Padding(
@@ -313,8 +341,9 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
   Future<void> _selectDeviceAndConnect(
     int index, {
     bool forceReconnect = false,
+    bool allowWhenBusy = false,
   }) async {
-    if (_busy) {
+    if (_busy && !allowWhenBusy) {
       return;
     }
     if (index < 0 || index >= _availableAssignments.length) {
@@ -498,9 +527,20 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
         password: '123456',
       );
       _reconnectTimer?.cancel();
+
+      String connectedStatus = '연결됨';
+      try {
+        final autoDownResult = await _bleService.armDown();
+        connectedStatus = autoDownResult.isSuccess
+            ? '연결됨 (자동 내림 완료)'
+            : '연결됨 (자동 내림 응답 수신)';
+      } catch (_) {
+        connectedStatus = '연결됨 (자동 내림 실패)';
+      }
+
       if (mounted) {
         setState(() {
-          _statusText = '연결됨';
+          _statusText = connectedStatus;
         });
       }
     } catch (_) {
@@ -521,9 +561,13 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
     setState(() {
       _busy = true;
       _activeAction = _ActionType.up;
+      _upSpinTrigger += 1;
     });
     try {
-      await _bleService.armUp();
+      await Future.wait([
+        _bleService.armUp(),
+        Future<void>.delayed(const Duration(seconds: 1)),
+      ]);
     } finally {
       if (mounted) {
         setState(() {
@@ -541,9 +585,13 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
     setState(() {
       _busy = true;
       _activeAction = _ActionType.down;
+      _downSpinTrigger += 1;
     });
     try {
-      await _bleService.armDown();
+      await Future.wait([
+        _bleService.armDown(),
+        Future<void>.delayed(const Duration(seconds: 1)),
+      ]);
     } finally {
       if (mounted) {
         setState(() {
@@ -559,40 +607,42 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
     final statusColor = connected
         ? const Color(0xFF2E7D32)
         : const Color(0xFFC62828);
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final iconTextGap = screenWidth * 0.02;
 
     return SafeArea(
       top: false,
       child: Card(
         margin: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            child: Row(
-              children: [
-                GestureDetector(
-                  behavior: HitTestBehavior.translucent,
-                  onTap: _handleBluetoothDemoTap,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        connected
-                            ? Icons.bluetooth_connected
-                            : Icons.bluetooth_disabled,
-                        color: statusColor,
-                      ),
-                      const SizedBox(width: 8),
-                      const Text(
-                        '블루투스',
-                        style: TextStyle(fontWeight: FontWeight.w700),
-                      ),
-                      const SizedBox(width: 8),
-                    ],
-                  ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            children: [
+              GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onTap: _handleBluetoothDemoTap,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      connected
+                          ? Icons.bluetooth_connected
+                          : Icons.bluetooth_disabled,
+                      color: statusColor,
+                    ),
+                    SizedBox(width: iconTextGap),
+                    const Text(
+                      '블루투스',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    SizedBox(width: iconTextGap),
+                  ],
                 ),
-                Expanded(
-                  child: Text(
-                    _statusText,
-                    overflow: TextOverflow.ellipsis,
+              ),
+              Expanded(
+                child: Text(
+                  _statusText,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(color: statusColor),
                 ),
               ),
@@ -609,6 +659,9 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
   }
 
   Widget _buildAuthCard() {
+    final screenHeight = MediaQuery.sizeOf(context).height;
+    final contentGap = screenHeight * 0.014;
+
     return Card(
       margin: const EdgeInsets.fromLTRB(16, 8, 16, 10),
       child: Padding(
@@ -619,7 +672,7 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
               '휴대폰 번호를 직접 입력하지 않고 권한 허용 후 자동 인증합니다.',
               textAlign: TextAlign.center,
             ),
-            const SizedBox(height: 12),
+            SizedBox(height: contentGap),
             SizedBox(
               width: double.infinity,
               child: FilledButton(
@@ -638,70 +691,190 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
       return const SizedBox.shrink();
     }
 
-    return Card(
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('연결 장치 선택', style: Theme.of(context).textTheme.titleSmall),
-            const SizedBox(height: 8),
-            ...List.generate(_availableAssignments.length, (index) {
-              final item = _availableAssignments[index];
-              final selected = _selectedAssignmentIndex == index;
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final selectedIndex =
+        _selectedAssignmentIndex != null &&
+            _selectedAssignmentIndex! >= 0 &&
+            _selectedAssignmentIndex! < _availableAssignments.length
+        ? _selectedAssignmentIndex
+        : null;
 
-              return Card(
-                margin: const EdgeInsets.only(bottom: 8),
-                color: selected
-                    ? Theme.of(context).colorScheme.secondaryContainer
-                    : null,
-                child: ListTile(
-                  onTap: _busy
-                      ? null
-                      : () {
-                          unawaited(_selectDeviceAndConnect(index));
-                        },
-                  title: Text(item.deviceId),
-                  subtitle: Text(item.assignedPeriod),
-                  trailing: selected
-                      ? Icon(
-                          Icons.check_circle,
-                          color: Theme.of(context).colorScheme.primary,
-                        )
-                      : const Icon(Icons.radio_button_unchecked),
+    return Card(
+      elevation: 0,
+      margin: const EdgeInsets.fromLTRB(16, 8, 16, 10),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: colorScheme.outlineVariant),
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final panelWidth = constraints.maxWidth;
+          final headerIconSize = panelWidth * 0.09;
+          final headerGap = panelWidth * 0.026;
+          final sectionGap = panelWidth * 0.03;
+          final itemGap = panelWidth * 0.02;
+
+          return Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: headerIconSize,
+                      height: headerIconSize,
+                      decoration: BoxDecoration(
+                        color: colorScheme.primaryContainer,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(
+                        Icons.developer_board_rounded,
+                        color: colorScheme.onPrimaryContainer,
+                        size: headerIconSize * 0.58,
+                      ),
+                    ),
+                    SizedBox(width: headerGap),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '연결 장치 선택',
+                            style: theme.textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          Text(
+                            '장치를 선택하면 자동으로 연결됩니다',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: panelWidth * 0.026,
+                        vertical: panelWidth * 0.015,
+                      ),
+                      decoration: BoxDecoration(
+                        color: colorScheme.secondaryContainer,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        '${_availableAssignments.length}대',
+                        style: theme.textTheme.labelMedium?.copyWith(
+                          color: colorScheme.onSecondaryContainer,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-              );
-            }),
-          ],
-        ),
+                SizedBox(height: sectionGap),
+                InputDecorator(
+                  decoration: InputDecoration(
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: panelWidth * 0.03,
+                    ),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<int>(
+                      isExpanded: true,
+                      value: selectedIndex,
+                      borderRadius: BorderRadius.circular(12),
+                      hint: const Text('연결할 장치를 선택해 주세요'),
+                      items: List<DropdownMenuItem<int>>.generate(
+                        _availableAssignments.length,
+                        (index) {
+                          final item = _availableAssignments[index];
+                          return DropdownMenuItem<int>(
+                            value: index,
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.memory_rounded,
+                                  size: panelWidth * 0.045,
+                                  color: colorScheme.primary,
+                                ),
+                                SizedBox(width: itemGap),
+                                Expanded(
+                                  child: Text(
+                                    '${item.deviceId} (${item.assignedPeriod})',
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                      onChanged: _busy
+                          ? null
+                          : (value) {
+                              if (value == null) {
+                                return;
+                              }
+                              unawaited(_selectDeviceAndConnect(value));
+                            },
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }
 
   Widget _buildVerticalControls() {
     return Expanded(
-      child: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            _CircleActionButton(
-              icon: Icons.keyboard_arrow_up_rounded,
-              color: const Color(0xFF00897B),
-              enabled: !_busy && _bleService.isConnected,
-              loading: _activeAction == _ActionType.up,
-              onPressed: _armUp,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          // 요청사항: 현재 대비 약 2배 크기로 키우되, 화면 높이를 넘지 않게 제한.
+          const gapRatio = 0.04;
+          const buttonRatio = 0.38;
+          const sizeScale = 2.0;
+
+          final gap = constraints.maxHeight * gapRatio;
+          final preferred = constraints.maxHeight * buttonRatio * sizeScale;
+          final maxByHeight = (constraints.maxHeight - gap) / 2;
+          final diameter = math.min(preferred, maxByHeight);
+
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _CircleActionButton(
+                  icon: Icons.keyboard_arrow_up_rounded,
+                  color: const Color(0xFF00897B),
+                  enabled: !_busy && _bleService.isConnected,
+                  loading: _activeAction == _ActionType.up,
+                  spinTrigger: _upSpinTrigger,
+                  diameter: diameter,
+                  onPressed: _armUp,
+                ),
+                SizedBox(height: gap),
+                _CircleActionButton(
+                  icon: Icons.keyboard_arrow_down_rounded,
+                  color: const Color(0xFF00695C),
+                  enabled: !_busy && _bleService.isConnected,
+                  loading: _activeAction == _ActionType.down,
+                  spinTrigger: _downSpinTrigger,
+                  diameter: diameter,
+                  onPressed: _armDown,
+                ),
+              ],
             ),
-            const SizedBox(height: 28),
-            _CircleActionButton(
-              icon: Icons.keyboard_arrow_down_rounded,
-              color: const Color(0xFF00695C),
-              enabled: !_busy && _bleService.isConnected,
-              loading: _activeAction == _ActionType.down,
-              onPressed: _armDown,
-            ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
@@ -709,16 +882,21 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
   @override
   Widget build(BuildContext context) {
     final hasStoredInfo = _availableAssignments.isNotEmpty;
+    final screenHeight = MediaQuery.sizeOf(context).height;
+    final topGap = screenHeight * 0.017;
 
     return Scaffold(
-      body: Column(
-        children: [
-          const SizedBox(height: 14),
-          if (!hasStoredInfo) _buildAuthCard(),
-          _buildDeviceSelection(),
-          _buildVerticalControls(),
-          _buildFooterStatusCard(),
-        ],
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            SizedBox(height: topGap),
+            if (!hasStoredInfo) _buildAuthCard(),
+            _buildDeviceSelection(),
+            _buildVerticalControls(),
+            _buildFooterStatusCard(),
+          ],
+        ),
       ),
     );
   }
@@ -730,6 +908,8 @@ class _CircleActionButton extends StatelessWidget {
     required this.color,
     required this.enabled,
     required this.loading,
+    required this.spinTrigger,
+    required this.diameter,
     required this.onPressed,
   });
 
@@ -737,40 +917,109 @@ class _CircleActionButton extends StatelessWidget {
   final Color color;
   final bool enabled;
   final bool loading;
+  final int spinTrigger;
+  final double diameter;
   final Future<void> Function() onPressed;
 
   @override
   Widget build(BuildContext context) {
+    final progressDiameter = diameter * 1.05;
+    final iconSize = diameter * 0.39;
+    final shadowColor = enabled
+        ? Colors.black.withValues(alpha: 0.16)
+        : Colors.black.withValues(alpha: 0.08);
+
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         SizedBox(
-          width: 160,
-          height: 160,
+          width: diameter,
+          height: diameter,
           child: Stack(
             alignment: Alignment.center,
             children: [
               if (loading)
-                const SizedBox(
-                  width: 168,
-                  height: 168,
-                  child: CircularProgressIndicator(strokeWidth: 4),
+                SizedBox(
+                  width: progressDiameter,
+                  height: progressDiameter,
+                  child: const CircularProgressIndicator(strokeWidth: 4),
                 ),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  shape: const CircleBorder(),
-                  padding: EdgeInsets.zero,
-                  elevation: enabled ? 8 : 0,
-                  backgroundColor: enabled ? color : const Color(0xFFB0BEC5),
-                  foregroundColor: Colors.white,
+              _OneTurnSpin(
+                trigger: spinTrigger,
+                child: Container(
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: shadowColor,
+                        blurRadius: 18,
+                        offset: const Offset(0, 8),
+                        spreadRadius: 1,
+                      ),
+                    ],
+                  ),
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      shape: const CircleBorder(),
+                      padding: EdgeInsets.zero,
+                      elevation: 0,
+                      backgroundColor: enabled
+                          ? color
+                          : const Color(0xFFB0BEC5),
+                      foregroundColor: Colors.white,
+                    ),
+                    onPressed: enabled ? () => unawaited(onPressed()) : null,
+                    child: Icon(icon, size: iconSize),
+                  ),
                 ),
-                onPressed: enabled ? () => unawaited(onPressed()) : null,
-                child: Icon(icon, size: 62),
               ),
             ],
           ),
         ),
       ],
     );
+  }
+}
+
+class _OneTurnSpin extends StatefulWidget {
+  const _OneTurnSpin({required this.trigger, required this.child});
+
+  final int trigger;
+  final Widget child;
+
+  @override
+  State<_OneTurnSpin> createState() => _OneTurnSpinState();
+}
+
+class _OneTurnSpinState extends State<_OneTurnSpin>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 1),
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant _OneTurnSpin oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.trigger != widget.trigger) {
+      _controller.forward(from: 0);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RotationTransition(turns: _controller, child: widget.child);
   }
 }
