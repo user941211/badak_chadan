@@ -31,6 +31,7 @@ class BleLockService {
   static const int _cmdUp = 0x02;
   static const int _cmdDown = 0x03;
   static const int _cmdGetStatus = 0x05;
+  static const int _cmdBuzzerAlarm = 0x08;
   static const int _cmdGetVersion = 0x07;
   static const int _cmdGetLimit = 0x0D;
   static const int _cmdReboot = 0x0F;
@@ -41,6 +42,7 @@ class BleLockService {
     _cmdUp: 0x82,
     _cmdDown: 0x83,
     _cmdGetStatus: 0x85,
+    _cmdBuzzerAlarm: 0x88,
     _cmdGetVersion: 0x87,
     _cmdGetLimit: 0x8D,
     _cmdReboot: null,
@@ -133,6 +135,13 @@ class BleLockService {
 
   Future<AckResult> armDown() =>
       _sendAckCommand(_cmdDown, timeout: const Duration(seconds: 3));
+
+  Future<AckResult> setVoiceEnabledExperimental(bool enabled) =>
+      _sendAckCommand(
+        _cmdBuzzerAlarm,
+        data: <int>[enabled ? 1 : 0],
+        timeout: const Duration(seconds: 3),
+      );
 
   Future<String> readVersion() async {
     final frame = await _writeAndWaitResponse(
@@ -537,9 +546,14 @@ class BleLockService {
 
   Future<AckResult> _sendAckCommand(
     int cmd, {
+    List<int> data = const <int>[],
     Duration timeout = const Duration(seconds: 3),
   }) async {
-    final frame = await _writeAndWaitResponse(cmd, timeout: timeout);
+    final frame = await _writeAndWaitResponse(
+      cmd,
+      data: data,
+      timeout: timeout,
+    );
     if (frame == null || frame.data.isEmpty) {
       throw BleOperationException(
         '명령 응답이 비어 있습니다. cmd=0x${cmd.toRadixString(16)}',

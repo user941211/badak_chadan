@@ -56,6 +56,7 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
   int? _selectedAssignmentIndex;
   bool _busy = false;
   String _status = '대기 중';
+  bool? _experimentalVoiceEnabled;
 
   @override
   void initState() {
@@ -317,6 +318,32 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
     });
   }
 
+  Future<void> _voiceOnExperimental() async {
+    await _runTask(() async {
+      final result = await _bleService.setVoiceEnabledExperimental(true);
+      _appendLog('음성 ON(실험): ${result.description}');
+      if (!result.isSuccess || !mounted) {
+        return;
+      }
+      setState(() {
+        _experimentalVoiceEnabled = true;
+      });
+    });
+  }
+
+  Future<void> _voiceOffExperimental() async {
+    await _runTask(() async {
+      final result = await _bleService.setVoiceEnabledExperimental(false);
+      _appendLog('음성 OFF(실험): ${result.description}');
+      if (!result.isSuccess || !mounted) {
+        return;
+      }
+      setState(() {
+        _experimentalVoiceEnabled = false;
+      });
+    });
+  }
+
   void _appendSnapshot(String title, StatusSnapshot snapshot) {
     final lastFrame = snapshot.lastFrame;
     final decoded = lastFrame == null
@@ -426,41 +453,46 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
               ),
             ],
           ),
-          if (_selectableAssignments.length > 1) ...[
+          if (_selectableAssignments.isNotEmpty) ...[
             const SizedBox(height: 12),
             Text(
               '연결할 장치 선택 (${_selectableAssignments.length}개)',
               style: Theme.of(context).textTheme.titleSmall,
             ),
             const SizedBox(height: 8),
-            ...List.generate(_selectableAssignments.length, (index) {
-              final item = _selectableAssignments[index];
-              final selected = _selectedAssignmentIndex == index;
-              return Card(
-                margin: const EdgeInsets.only(bottom: 8),
-                color: selected
-                    ? Theme.of(context).colorScheme.secondaryContainer
-                    : null,
-                child: ListTile(
-                  onTap: _busy
+            InputDecorator(
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                labelText: '장치 선택',
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<int>(
+                  isExpanded: true,
+                  value: _selectedAssignmentIndex,
+                  hint: const Text('연결할 장치를 선택해 주세요'),
+                  items: List<DropdownMenuItem<int>>.generate(
+                    _selectableAssignments.length,
+                    (index) {
+                      final item = _selectableAssignments[index];
+                      return DropdownMenuItem<int>(
+                        value: index,
+                        child: Text(
+                          '${item.deviceId} (${item.assignedPeriod})',
+                        ),
+                      );
+                    },
+                  ),
+                  onChanged: _busy
                       ? null
-                      : () {
+                      : (value) {
                           setState(() {
-                            _selectedAssignmentIndex = index;
+                            _selectedAssignmentIndex = value;
                           });
                         },
-                  title: Text(item.deviceId),
-                  subtitle: Text(item.assignedPeriod),
-                  trailing: selected
-                      ? Icon(
-                          Icons.check_circle,
-                          color: Theme.of(context).colorScheme.primary,
-                        )
-                      : const Icon(Icons.radio_button_unchecked),
                 ),
-              );
-            }),
-            const SizedBox(height: 4),
+              ),
+            ),
+            const SizedBox(height: 8),
             FilledButton(
               onPressed: _busy ? null : _connectSelectedAssignment,
               child: const Text('선택 장치 연결'),
@@ -503,6 +535,18 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
                 onPressed: (!_busy && _bleService.isConnected) ? _reboot : null,
                 child: const Text('재부팅'),
               ),
+              FilledButton.tonal(
+                onPressed: (!_busy && _bleService.isConnected)
+                    ? _voiceOnExperimental
+                    : null,
+                child: const Text('음성 ON(실험)'),
+              ),
+              FilledButton.tonal(
+                onPressed: (!_busy && _bleService.isConnected)
+                    ? _voiceOffExperimental
+                    : null,
+                child: const Text('음성 OFF(실험)'),
+              ),
               OutlinedButton(
                 onPressed: (!_busy && _bleService.isConnected)
                     ? _disconnect
@@ -511,6 +555,13 @@ class _ParkingLockHomePageState extends State<ParkingLockHomePage> {
               ),
             ],
           ),
+          if (_experimentalVoiceEnabled != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              '실험 음성 상태: ${_experimentalVoiceEnabled! ? 'ON' : 'OFF'}',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+          ],
           const SizedBox(height: 12),
           Container(
             height: 300,
